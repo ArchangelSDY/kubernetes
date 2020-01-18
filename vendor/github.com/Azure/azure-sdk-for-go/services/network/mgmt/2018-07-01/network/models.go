@@ -11699,6 +11699,9 @@ type LoadBalancingRulePropertiesFormat struct {
 	DisableOutboundSnat *bool `json:"disableOutboundSnat,omitempty"`
 	// ProvisioningState - Gets the provisioning state of the PublicIP resource. Possible values are: 'Updating', 'Deleting', and 'Failed'.
 	ProvisioningState *string `json:"provisioningState,omitempty"`
+
+	EnableDestinationServiceEndpoint *bool        `json:"enableDestinationServiceEndpoint,omitempty"`
+	DestinationServiceEndpointProbe  *SubResource `json:"destinationServiceEndpointProbe,omitempty"`
 }
 
 // LocalNetworkGateway a common class for general resource information

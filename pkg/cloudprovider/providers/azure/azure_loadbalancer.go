@@ -83,6 +83,8 @@ const (
 	// ServiceAnnotationLoadBalancerMixedProtocols is the annotation used on the service
 	// to create both TCP and UDP protocols when creating load balancer rules.
 	ServiceAnnotationLoadBalancerMixedProtocols = "service.beta.kubernetes.io/azure-load-balancer-mixed-protocols"
+
+	ServiceAnnotationDestinationServiceEndpoint = "service.beta.kubernetes.io/azure-load-balancer-destination-service-endpoint"
 )
 
 var (
@@ -975,6 +977,11 @@ func (az *Cloud) reconcileLoadBalancerRule(
 				expectedRule.Probe = &network.SubResource{
 					ID: to.StringPtr(az.getLoadBalancerProbeID(lbName, lbRuleName)),
 				}
+			}
+
+			if v, ok := service.Annotations[ServiceAnnotationDestinationServiceEndpoint]; ok && v == "true" {
+				expectedRule.EnableDestinationServiceEndpoint = to.BoolPtr(true)
+				expectedRule.DestinationServiceEndpointProbe = expectedRule.Probe
 			}
 
 			expectedRules = append(expectedRules, expectedRule)
