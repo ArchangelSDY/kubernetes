@@ -19,6 +19,8 @@ package azure
 import (
 	"bytes"
 	"context"
+	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/services/containerregistry/mgmt/2019-05-01/containerregistry"
@@ -96,6 +98,109 @@ func Test(t *testing.T) {
 	}
 }
 
+func TestCustomContainerRegistryUrls(t *testing.T) {
+	azureStackFile, err := ioutil.TempFile("", "azurestack.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(azureStackFile.Name())
+
+	azureStackConfig := []byte(`{"containerRegistryDNSSuffix": "azurecr.custom"}`)
+	if _, err = azureStackFile.Write(azureStackConfig); err != nil {
+		t.Fatal(err)
+	}
+
+	os.Setenv(azure.EnvironmentFilepathName, azureStackFile.Name())
+
+	configStr := `
+    {
+        "cloud": "AzureStackCloud",
+        "aadClientId": "foo",
+        "aadClientSecret": "bar"
+    }`
+	result := []containerregistry.Registry{
+		{
+			Name: to.StringPtr("foo"),
+			RegistryProperties: &containerregistry.RegistryProperties{
+				LoginServer: to.StringPtr("*.azurecr.io"),
+			},
+		},
+		{
+			Name: to.StringPtr("bar"),
+			RegistryProperties: &containerregistry.RegistryProperties{
+				LoginServer: to.StringPtr("*.azurecr.cn"),
+			},
+		},
+		{
+			Name: to.StringPtr("baz"),
+			RegistryProperties: &containerregistry.RegistryProperties{
+				LoginServer: to.StringPtr("*.azurecr.de"),
+			},
+		},
+		{
+			Name: to.StringPtr("bus"),
+			RegistryProperties: &containerregistry.RegistryProperties{
+				LoginServer: to.StringPtr("*.azurecr.us"),
+			},
+		},
+		{
+			Name: to.StringPtr("custom"),
+			RegistryProperties: &containerregistry.RegistryProperties{
+				LoginServer: to.StringPtr("*.azurecr.custom"),
+			},
+		},
+	}
+	fakeClient := &fakeClient{
+		results: result,
+	}
+
+	provider := &acrProvider{
+		registryClient: fakeClient,
+	}
+	provider.loadConfig(bytes.NewBufferString(configStr))
+
+	creds := provider.Provide("")
+
+	if len(creds) != len(result)+1 {
+		t.Errorf("Unexpected list: %v, expected length %d", creds, len(result)+1)
+	}
+	for _, cred := range creds {
+		if cred.Username != "" && cred.Username != "foo" {
+			t.Errorf("expected 'foo' for username, saw: %v", cred.Username)
+		}
+		if cred.Password != "" && cred.Password != "bar" {
+			t.Errorf("expected 'bar' for password, saw: %v", cred.Username)
+		}
+	}
+	for _, val := range result {
+		registryName := getLoginServer(val)
+		if _, found := creds[registryName]; !found {
+			t.Errorf("Missing expected registry: %s", registryName)
+		}
+	}
+}
+
+func TestGetACRRE(t *testing.T) {
+	tests := []struct {
+		urls     []string
+		expected string
+	}{
+		{
+			urls:     []string{"*.azurecr.foo", "*.azurecr.bar"},
+			expected: `.*\.azurecr\.foo|.*\.azurecr\.bar`,
+		},
+		{
+			urls:     []string{"*.azurecr.foo.bar"},
+			expected: `.*\.azurecr\.foo\.bar`,
+		},
+	}
+	for _, test := range tests {
+		if acrRE := getACRRE(test.urls); acrRE.String() != test.expected {
+			t.Errorf("function makeACRRE returns \"%s\" for urls %+v, expected \"%s\"", acrRE, test.urls, test.expected)
+		}
+	}
+}
+
 func TestParseACRLoginServerFromImage(t *testing.T) {
 	configStr := `
     {
@@ -153,6 +258,9 @@ func TestParseACRLoginServerFromImage(t *testing.T) {
 			image:    "foo.azurecr.my.cloud/bar/image:version",
 			expected: "foo.azurecr.my.cloud",
 		},
+	}
+	provider := &acrProvider{
+		acrRE: getACRRE(defaultContainerRegistryUrls),
 	}
 	for _, test := range tests {
 		if loginServer := provider.parseACRLoginServerFromImage(test.image); loginServer != test.expected {

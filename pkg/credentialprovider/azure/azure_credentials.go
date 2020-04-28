@@ -47,8 +47,7 @@ const (
 )
 
 var (
-	containerRegistryUrls = []string{"*.azurecr.io", "*.azurecr.cn", "*.azurecr.de", "*.azurecr.us"}
-	acrRE                 = regexp.MustCompile(`.*\.azurecr\.io|.*\.azurecr\.cn|.*\.azurecr\.de|.*\.azurecr\.us`)
+	defaultContainerRegistryUrls = []string{"*.azurecr.io", "*.azurecr.cn", "*.azurecr.de", "*.azurecr.us"}
 )
 
 // init registers the various means by which credentials may
@@ -112,6 +111,8 @@ type acrProvider struct {
 	environment           *azure.Environment
 	registryClient        RegistriesClient
 	servicePrincipalToken *adal.ServicePrincipalToken
+	containerRegistryUrls []string
+	acrRE                 *regexp.Regexp
 }
 
 // ParseConfig returns a parsed configuration for an Azure cloudprovider config file
@@ -138,6 +139,38 @@ func parseConfig(configReader io.Reader) (*auth.AzureAuthConfig, error) {
 	return &config, nil
 }
 
+func getContainerRegistryUrls(envRegistrySuffix string) []string {
+	dedup := make(map[string]interface{})
+
+	// Add defaults
+	for _, url := range defaultContainerRegistryUrls {
+		dedup[url] = nil
+	}
+
+	// Add from cloud env
+	if len(envRegistrySuffix) != 0 {
+		dedup["*."+envRegistrySuffix] = nil
+	}
+
+	uniqueUrls := make([]string, 0, len(dedup))
+	for url := range dedup {
+		uniqueUrls = append(uniqueUrls, url)
+	}
+
+	return uniqueUrls
+}
+
+func getACRRE(urls []string) *regexp.Regexp {
+	parts := make([]string, 0, len(urls))
+	for _, url := range urls {
+		part := strings.ReplaceAll(url, ".", "\\.")
+		part = strings.ReplaceAll(part, "*", ".*")
+		parts = append(parts, part)
+	}
+	pattern := strings.Join(parts, "|")
+	return regexp.MustCompile(pattern)
+}
+
 func (a *acrProvider) loadConfig(rdr io.Reader) error {
 	var err error
 	a.config, err = parseConfig(rdr)
@@ -149,6 +182,10 @@ func (a *acrProvider) loadConfig(rdr io.Reader) error {
 	if err != nil {
 		return err
 	}
+
+	a.containerRegistryUrls = getContainerRegistryUrls(a.environment.ContainerRegistryDNSSuffix)
+	a.acrRE = getACRRE(a.containerRegistryUrls)
+	klog.V(4).Infof("container registry urls: %+v", a.containerRegistryUrls)
 
 	return nil
 }
@@ -196,7 +233,7 @@ func (a *acrProvider) Provide(image string) credentialprovider.DockerConfig {
 		}
 	} else {
 		// Add our entry for each of the supported container registry URLs
-		for _, url := range containerRegistryUrls {
+		for _, url := range a.containerRegistryUrls {
 			cred := &credentialprovider.DockerConfigEntry{
 				Username: a.config.AADClientID,
 				Password: a.config.AADClientSecret,
@@ -276,7 +313,7 @@ func getACRDockerEntryFromARMToken(a *acrProvider, loginServer string) (*credent
 // Parameter `image` is expected in following format: foo.azurecr.io/bar/imageName:version
 // If the provided image is not an acr image, this function will return an empty string.
 func (a *acrProvider) parseACRLoginServerFromImage(image string) string {
-	match := acrRE.FindAllString(image, -1)
+	match := a.acrRE.FindAllString(image, -1)
 	if len(match) == 1 {
 		return match[0]
 	}
